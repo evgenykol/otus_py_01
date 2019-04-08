@@ -7,16 +7,17 @@
 #                     '"$http_user_agent" "$http_x_forwarded_for" '
 #                     '"$http_X_REQUEST_ID" "$http_X_RB_USER" $request_time';
 
-import os
-import logging
-import datetime
-import re
-import sys
-import gzip
 import collections
-import statistics
-import shutil
+import datetime
 import fileinput
+import gzip
+import json
+import logging
+import os
+import re
+import shutil
+import statistics
+import string
 
 logging.basicConfig(
     format='[%(asctime)s] %(levelname).1s %(message)s',
@@ -32,22 +33,24 @@ config = {
 
 
 def find_last_log(cfg, filepat):
-    max_date = {'date': datetime.datetime(1, 1, 1), 'path': '0'}
+    max_date = collections.namedtuple('max_date', ['date', 'path'])
+    max_date.date = datetime.datetime(1, 1, 1)
+    max_date.path = '0'
     for path, dirlist, filelist in os.walk(cfg["LOG_DIR"]):
         for name in filelist:
-            logging.debug(name)
+            # logging.debug(name)
             if re.match(filepat, name):
                 date_re = re.search('[0-9]{8}', name)
                 date_str = name[date_re.start():date_re.end()]
 
                 parsed_date = datetime.datetime.strptime(date_str, "%Y%m%d")
 
-                if parsed_date > max_date['date']:
-                    max_date['date'] = parsed_date
-                    max_date['path'] = os.path.join(path, name)
+                if parsed_date > max_date.date:
+                    max_date.date = parsed_date
+                    max_date.path = os.path.join(path, name)
 
     logging.info('Last log created at %s, path: %s' %
-                 (max_date['date'], max_date['path'])
+                 (max_date.date, max_date.path)
                  )
     # TODO: replace with namedtuple
     return max_date
@@ -60,18 +63,19 @@ def make_report_path(cfg, last_log):
     rep_template = os.path.join(cfg['REPORT_DIR'], 'report.html')
 
     if not os.path.exists(rep_template):
+        # TODO: check if report.html is in script folder
         raise FileNotFoundError('Report template file not found')
 
     report_path = os.path.join(cfg['REPORT_DIR'],
                                'report-%s.html' % (datetime.datetime.strftime(
-                                   last_log['date'], '%Y.%m.%d'))
+                                   last_log.date, '%Y.%m.%d'))
                                )
 
     if not os.path.exists(report_path):
         logging.info('Writing report at %s', report_path)
         return report_path
     else:
-        logging.info('Report at %s already exists', report_path)
+        raise FileExistsError('Report at %s already exists' % report_path)
         return None
 
 
@@ -87,12 +91,12 @@ def process_line(line, line_number):
 
         return {'url': url, 'request_time': request_time}
     except Exception as e:
-        logging.error('Log passing error at line: %d' % (line_number))
+        logging.error('Log parsing error at line: %d' % (line_number))
         return False
 
 
-def xreadlines(log_path):
-    with gzip.open(log_path, 'rb') if log_path.endswith('.gz') else open(log_path) as log:
+def xreadlines(path):
+    with gzip.open(path, 'rb') if path.endswith('.gz') else open(path) as log:
         total = processed = 0
         for line in log:
             parsed_line = process_line(line, total)
@@ -100,63 +104,74 @@ def xreadlines(log_path):
             if parsed_line:
                 processed += 1
                 yield parsed_line
-                # return parsed_line
+
         sucseccful = float(processed) / float(total)
         logging.info("%s of %s lines processed, sucseccful percent = %f" %
-                     (processed, total, sucseccful)
+                     (processed, total, sucseccful * 100)
                      )
 
-        if (sucseccful < 0.7):
-            raise ValueError('Too many parsing errors')
+        if (sucseccful < 0.95):
+            raise ValueError('Too many log parsing errors')
 
 
 def collect_url_data(reader):
     Urls = collections.namedtuple('Urls', ['urls', 'count'])
-    Urls.urls = collections.defaultdict(set)
+    Urls.urls = collections.defaultdict(list)
     Urls.count = 0
     Urls.total_time = 0
     for url_data in reader:
         k, v = url_data['url'], url_data['request_time']
-        Urls.urls[k].add(v)
+        Urls.urls[k].append(v)
         Urls.count += 1
         Urls.total_time += v
 
-    # How can I do it with generator?
+    # Maybe I can do it with generator?
     return Urls
 
 
-def calc_statistic(urls):
-    stat_string = ""
+def calc_statistic(cfg, urls):
+    stat_list = []
     for url, reqtm in urls.urls.items():
-        logging.debug(url + ' ' + str(reqtm))
         stat = {}
         stat["url"] = url
         stat["count"] = len(reqtm)
-        stat["count_perc"] = 100.0 * (stat["count"] / urls.count)
-        stat["time_sum"] = sum(reqtm)
-        stat["time_perc"] = 100.0 * (stat["time_sum"] / urls.total_time)
-        stat["time_avg"] = stat["time_sum"] / stat["count"]
-        stat["time_max"] = max(reqtm)
-        stat["time_med"] = statistics.median(reqtm)
+        stat["count_perc"] = round(100.0 * (stat["count"] / urls.count), 3)
+        stat["time_sum"] = round(sum(reqtm), 3)
+        stat["time_perc"] = round(100.0 * (stat["time_sum"] /
+                                           urls.total_time), 3
+                                  )
+        stat["time_avg"] = round(stat["time_sum"] / stat["count"], 3)
+        stat["time_max"] = round(max(reqtm), 3)
+        stat["time_med"] = round(statistics.median(reqtm), 3)
 
-        if(stat_string != ""):
-            stat_string += ","
-        stat_string += str(stat)
+        stat_list.append(stat)
 
-    # Не пойдет так. Нужно выбрать топчик
-    # json!!!!
-    return stat_string
+    sorted_stat = (sorted(stat_list, key=lambda k: k["time_sum"], reverse=True)
+                   )[:cfg['REPORT_SIZE']]
+
+    logging.debug('stat_list size = %d, sorted size = %d' %
+                  (len(stat_list), len(sorted_stat))
+                  )
+
+    return json.dumps(sorted_stat)
 
 
 def write_report(cfg, path, stat):
     rep_template = os.path.join(cfg['REPORT_DIR'], 'report.html')
+
+    # with open(rep_template, encoding='utf-8') as rep_template_file:
+    #     with open(path, mode='w', encoding='utf-8') as report_file:
+    #         text = string.Template(rep_template_file.read())
+    #         logging.debug('write report stat type %s' % type(stat))
+    #         text.substitute(table_json=stat)
+    #         # logging.debug('write report text len 1= %d' % len(text))
+    #         report_file.write(text)
+
     shutil.copyfile(rep_template, path)
 
     with fileinput.FileInput(path, inplace=True) as file:
         for line in file:
             print(line.replace('$table_json', stat), end='')
-
-    logging.debug(stat)
 
 
 def main():
@@ -164,32 +179,15 @@ def main():
         last_log = find_last_log(
             config, '^nginx-access-ui\.log-([0-9]{8}|[0-9]{8}\.gz)$')
         report_path = make_report_path(config, last_log)
-
-        if not report_path:
-            logging.info('exit')
-            sys.exit()
-
-        reader = xreadlines(last_log['path'])
+        reader = xreadlines(last_log.path)
         urls = collect_url_data(reader)
-        logging.debug('urls size = %d, total_time = %f, type of urls.urls = %s' %
-                      (urls.count, urls.total_time, str(type(urls.urls)))
-                      )
-        stat = calc_statistic(urls)
+        stat = calc_statistic(config, urls)
         write_report(config, report_path, stat)
 
-        # loglines = [line for line in reader]
-        # logging.info('type opof loglines is %s, len = %d, type of reader %s'
-        #              % (type(loglines), len(loglines), type(reader))
-        #              )
+        logging.info('Log analyzing done!')
 
-        '''while(next(reader)):
-            pass
-        next(reader)
-        next(reader)
-        next(reader)
-        next(reader)'''
     except StopIteration as e:
-        pass
+        logging.exception('StopIteration')
     except ValueError as e:
         logging.exception('ValueError')
     except Exception:
