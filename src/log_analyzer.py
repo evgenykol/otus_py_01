@@ -11,14 +11,13 @@ import argparse
 import collections
 import configparser
 import datetime
-import fileinput
 import gzip
 import json
 import logging
 import os
 import re
-import shutil
 import statistics
+import string
 
 logging.basicConfig(
     format='[%(asctime)s] %(levelname).1s %(message)s',
@@ -158,19 +157,16 @@ def calc_statistic(cfg, urls):
 def write_report(cfg, path, stat):
     rep_template = os.path.join(cfg['REPORT_DIR'], 'report.html')
 
-    # with open(rep_template, encoding='utf-8') as rep_template_file:
-    #     with open(path, mode='w', encoding='utf-8') as report_file:
-    #         text = string.Template(rep_template_file.read())
-    #         logging.debug('write report stat type %s' % type(stat))
-    #         text.substitute(table_json=stat)
-    #         # logging.debug('write report text len 1= %d' % len(text))
-    #         report_file.write(text)
+    with open(rep_template, encoding='utf-8') as rep_template_file:
+        with open(path, mode='w', encoding='utf-8') as report_file:
+            tmpl = string.Template(rep_template_file.read())
+            report_file.write(tmpl.safe_substitute(table_json=stat))
 
-    shutil.copyfile(rep_template, path)
+    # shutil.copyfile(rep_template, path)
 
-    with fileinput.FileInput(path, inplace=True) as file:
-        for line in file:
-            print(line.replace('$table_json', stat))
+    # with fileinput.FileInput(path, inplace=True) as file:
+    #     for line in file:
+    #         print(line.replace('$table_json', stat))
 
 
 def read_config(path):
