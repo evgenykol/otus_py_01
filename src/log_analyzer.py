@@ -7,7 +7,9 @@
 #                     '"$http_user_agent" "$http_x_forwarded_for" '
 #                     '"$http_X_REQUEST_ID" "$http_X_RB_USER" $request_time';
 
+import argparse
 import collections
+import configparser
 import datetime
 import fileinput
 import gzip
@@ -17,8 +19,6 @@ import os
 import re
 import shutil
 import statistics
-import argparse
-import sys
 
 logging.basicConfig(
     format='[%(asctime)s] %(levelname).1s %(message)s',
@@ -173,17 +173,29 @@ def write_report(cfg, path, stat):
             print(line.replace('$table_json', stat))
 
 
-def read_config(**kwargs):
-    print('AAAA')
-    logging.info(kwargs['--config'])
-    # raise FileNotFoundError('Config file %d not found' % kwargs['--config'])
+def read_config(path):
+    if not os.path.exists(path[0]):
+        raise FileNotFoundError('Config file file not found')
+
+    cfg = configparser.ConfigParser()
+    cfg.read(path[0])
+    cfg = cfg['config']
+
+    config['REPORT_SIZE'] = cfg.getint('REPORT_SIZE', config['REPORT_SIZE'])
+    config['REPORT_DIR'] = cfg.get('REPORT_DIR', config['REPORT_DIR'])
+    config['LOG_DIR'] = cfg.get('LOG_DIR', config['LOG_DIR'])
 
 
 def init_config():
-    print('BBBB')
-    parser = argparse.ArgumentParser(prog='log_analyzer')
-    parser.add_argument('--config', help='specify config file', default=read_config)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', help='specify config file',
+                        action='store_const', const=read_config,
+                        )
+    parser.add_argument('path', metavar='path', nargs='*')
     args = parser.parse_args()
+
+    if args.config:
+        args.config(args.path)
 
 
 def main():
