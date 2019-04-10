@@ -17,7 +17,8 @@ import os
 import re
 import shutil
 import statistics
-import string
+import argparse
+import sys
 
 logging.basicConfig(
     format='[%(asctime)s] %(levelname).1s %(message)s',
@@ -49,21 +50,19 @@ def find_last_log(cfg, filepat):
                     max_date.date = parsed_date
                     max_date.path = os.path.join(path, name)
 
+    if (max_date.path == '0'):
+        raise FileNotFoundError('Log file not found')
+
     logging.info('Last log created at %s, path: %s' %
                  (max_date.date, max_date.path)
                  )
-    # TODO: replace with namedtuple
     return max_date
 
 
 def make_report_path(cfg, last_log):
-    if not os.path.exists(cfg['REPORT_DIR']):
-        os.makedirs(cfg['REPORT_DIR'])
-
     rep_template = os.path.join(cfg['REPORT_DIR'], 'report.html')
 
     if not os.path.exists(rep_template):
-        # TODO: check if report.html is in script folder
         raise FileNotFoundError('Report template file not found')
 
     report_path = os.path.join(cfg['REPORT_DIR'],
@@ -171,11 +170,25 @@ def write_report(cfg, path, stat):
 
     with fileinput.FileInput(path, inplace=True) as file:
         for line in file:
-            print(line.replace('$table_json', stat), end='')
+            print(line.replace('$table_json', stat))
+
+
+def read_config(**kwargs):
+    print('AAAA')
+    logging.info(kwargs['--config'])
+    # raise FileNotFoundError('Config file %d not found' % kwargs['--config'])
+
+
+def init_config():
+    print('BBBB')
+    parser = argparse.ArgumentParser(prog='log_analyzer')
+    parser.add_argument('--config', help='specify config file', default=read_config)
+    args = parser.parse_args()
 
 
 def main():
     try:
+        init_config()
         last_log = find_last_log(
             config, '^nginx-access-ui\.log-([0-9]{8}|[0-9]{8}\.gz)$')
         report_path = make_report_path(config, last_log)
