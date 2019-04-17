@@ -8,9 +8,6 @@
 #                     '"$http_X_REQUEST_ID" "$http_X_RB_USER" $request_time';
 
 import argparse
-import collections
-import configparser
-import datetime
 import gzip
 import json
 import logging
@@ -18,6 +15,11 @@ import os
 import re
 import statistics
 import string
+import shutil
+from collections import namedtuple, defaultdict
+from datetime import datetime
+
+DEFAULT_CONFIG_PATH = './log_analyzer.cfg'
 
 logging.basicConfig(
     format='[%(asctime)s] %(levelname).1s %(message)s',
@@ -25,56 +27,83 @@ logging.basicConfig(
     datefmt='%Y.%m.%d %H:%M:%S'
 )
 
-config = {
-    "REPORT_SIZE": 1000,
-    "REPORT_DIR": "../reports",
-    "LOG_DIR": "../log"
-}
+LogInfo = namedtuple('LogInfo', ['date', 'path'])
 
 
-def find_last_log(cfg, filepat):
-    max_date = collections.namedtuple('max_date', ['date', 'path'])
-    max_date.date = datetime.datetime(1, 1, 1)
-    max_date.path = '0'
-    for path, dirlist, filelist in os.walk(cfg["LOG_DIR"]):
-        for name in filelist:
-            # logging.debug(name)
-            if re.match(filepat, name):
-                date_re = re.search('[0-9]{8}', name)
-                date_str = name[date_re.start():date_re.end()]
+def read_config(path):
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            'Config file file not found at path: {0}'.format(path)
+        )
 
-                parsed_date = datetime.datetime.strptime(date_str, "%Y%m%d")
+    with open(path) as cfg_file:
+        return json.loads(cfg_file.read())
 
-                if parsed_date > max_date.date:
-                    max_date.date = parsed_date
-                    max_date.path = os.path.join(path, name)
 
-    if (max_date.path == '0'):
+def init_config():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', help='Config file path',
+                        default=DEFAULT_CONFIG_PATH
+                        )
+    args = parser.parse_args()
+    config = read_config(DEFAULT_CONFIG_PATH)
+    if args.config:
+        external_config = read_config(args.config)
+        config.update(external_config)
+
+    return config
+
+
+def find_last_log(log_dir):
+    if not os.path.isdir(log_dir):
+        raise FileNotFoundError('Log directory not found')
+
+    last_log_info = None
+    r = re.compile(r'^nginx-access-ui\.log-(?P<date>\d{8})(\.gz)?$')
+    for path in os.listdir(log_dir):
+        m = r.match(path)
+        if not m:
+            continue
+
+        date_str = m.groupdict()['date']
+        try:
+            parsed_date = datetime.strptime(date_str, "%Y%m%d")
+        except ValueError:
+            continue
+
+        if not last_log_info or parsed_date > last_log_info.date:
+            last_log_info = LogInfo(parsed_date, os.path.join(log_dir, path))
+
+    if not last_log_info:
         raise FileNotFoundError('Log file not found')
 
     logging.info('Last log created at %s, path: %s' %
-                 (max_date.date, max_date.path)
+                 (last_log_info.date, last_log_info.path)
                  )
-    return max_date
+    return last_log_info
 
 
 def make_report_path(cfg, last_log):
-    rep_template = os.path.join(cfg['REPORT_DIR'], 'report.html')
+    # check for report.html exists
+    if not os.path.exists(cfg.get('REPORT_TEMPLATE')):
+        raise FileNotFoundError(
+            'Report template file not found at: {0}'.format(
+                cfg.get('REPORT_TEMPLATE'))
+        )
 
-    if not os.path.exists(rep_template):
-        raise FileNotFoundError('Report template file not found')
+    report_dir = cfg.get('REPORT_DIR')
+    if not os.path.exists(report_dir):
+        os.mkdir(report_dir)
 
-    report_path = os.path.join(cfg['REPORT_DIR'],
-                               'report-%s.html' % (datetime.datetime.strftime(
+    report_path = os.path.join(report_dir,
+                               'report-{0}.html'.format(datetime.strftime(
                                    last_log.date, '%Y.%m.%d'))
                                )
 
-    if not os.path.exists(report_path):
-        logging.info('Writing report at %s', report_path)
+    if not os.path.isfile(report_path):
         return report_path
     else:
         raise FileExistsError('Report at %s already exists' % report_path)
-        return None
 
 
 def process_line(line, line_number):
@@ -85,15 +114,12 @@ def process_line(line, line_number):
         url = elems[7]
         request_time = float(elems[-1])
 
-        # logging.info('url=%s, time=%f' % (url, f))
-
         return {'url': url, 'request_time': request_time}
-    except Exception as e:
-        logging.error('Log parsing error at line: %d' % (line_number))
+    except Exception:
         return False
 
 
-def xreadlines(path):
+def xreadlines(path, sucsessful_percent=None):
     with gzip.open(path, 'rb') if path.endswith('.gz') else open(path) as log:
         total = processed = 0
         for line in log:
@@ -108,13 +134,13 @@ def xreadlines(path):
                      (processed, total, sucseccful * 100)
                      )
 
-        if (sucseccful < 0.95):
-            raise ValueError('Too many log parsing errors')
+        if (sucsessful_percent) and (sucseccful < float(sucsessful_percent)):
+            raise RuntimeError('Too many log parsing errors')
 
 
 def collect_url_data(reader):
-    Urls = collections.namedtuple('Urls', ['urls', 'count'])
-    Urls.urls = collections.defaultdict(list)
+    Urls = namedtuple('Urls', ['urls', 'count'])
+    Urls.urls = defaultdict(list)
     Urls.count = 0
     Urls.total_time = 0
     for url_data in reader:
@@ -123,7 +149,6 @@ def collect_url_data(reader):
         Urls.count += 1
         Urls.total_time += v
 
-    # Maybe I can do it with generator?
     return Urls
 
 
@@ -147,72 +172,34 @@ def calc_statistic(cfg, urls):
     sorted_stat = (sorted(stat_list, key=lambda k: k["time_sum"], reverse=True)
                    )[:cfg['REPORT_SIZE']]
 
-    logging.debug('stat_list size = %d, sorted size = %d' %
-                  (len(stat_list), len(sorted_stat))
-                  )
-
     return json.dumps(sorted_stat)
 
 
 def write_report(cfg, path, stat):
-    rep_template = os.path.join(cfg['REPORT_DIR'], 'report.html')
+    report_tmp_path = path + '.tmp'
+    with open(cfg.get('REPORT_TEMPLATE'), encoding='utf-8') as rep_template:
+        with open(report_tmp_path, mode='w', encoding='utf-8') as report:
+            tmpl = string.Template(rep_template.read())
+            logging.info('Writing temporary report at %s', report_tmp_path)
+            report.write(tmpl.safe_substitute(table_json=stat))
 
-    with open(rep_template, encoding='utf-8') as rep_template_file:
-        with open(path, mode='w', encoding='utf-8') as report_file:
-            tmpl = string.Template(rep_template_file.read())
-            report_file.write(tmpl.safe_substitute(table_json=stat))
-
-    # shutil.copyfile(rep_template, path)
-
-    # with fileinput.FileInput(path, inplace=True) as file:
-    #     for line in file:
-    #         print(line.replace('$table_json', stat))
-
-
-def read_config(path):
-    if not os.path.exists(path[0]):
-        raise FileNotFoundError('Config file file not found')
-
-    cfg = configparser.ConfigParser()
-    cfg.read(path[0])
-    cfg = cfg['config']
-
-    config['REPORT_SIZE'] = cfg.getint('REPORT_SIZE', config['REPORT_SIZE'])
-    config['REPORT_DIR'] = cfg.get('REPORT_DIR', config['REPORT_DIR'])
-    config['LOG_DIR'] = cfg.get('LOG_DIR', config['LOG_DIR'])
-
-
-def init_config():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', help='specify config file',
-                        action='store_const', const=read_config,
-                        )
-    parser.add_argument('path', metavar='path', nargs='*')
-    args = parser.parse_args()
-
-    if args.config:
-        args.config(args.path)
+    logging.info('Moving {0} to {1}'.format(report_tmp_path, path))
+    shutil.move(report_tmp_path, path)
 
 
 def main():
     try:
-        init_config()
-        last_log = find_last_log(
-            config, '^nginx-access-ui\.log-([0-9]{8}|[0-9]{8}\.gz)$')
+        config = init_config()
+        last_log = find_last_log(config.get('LOG_DIR'))
         report_path = make_report_path(config, last_log)
-        reader = xreadlines(last_log.path)
+        reader = xreadlines(last_log.path, config.get('SUCSESSFUL_PERCENT'))
         urls = collect_url_data(reader)
         stat = calc_statistic(config, urls)
         write_report(config, report_path, stat)
-
         logging.info('Log analyzing done!')
 
-    except StopIteration as e:
-        logging.exception('StopIteration')
-    except ValueError as e:
-        logging.exception('ValueError')
     except Exception:
-        logging.exception('Global exception')
+        logging.exception('Exception')
 
 
 if __name__ == "__main__":
