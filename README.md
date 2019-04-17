@@ -6,7 +6,7 @@
 
 # Требования
 - Python версии не ниже 3.2
-- Шаблон отчета 'report.html', расположенный в каталоге REPORT_DIR
+- Шаблон отчета 'report.html', расположенный в каталоге скрипта
 - Файл jquery.tablesorter.min.js, расположенный в каталоге REPORT_DIR
 
 # Запуск и результат
@@ -23,18 +23,11 @@ $ python3 log_analyzer.py
 ```
 
 Скрипт ищет в каталоге LOG_DIR последний по дате в имени файла лог, обрабатывает его и пишет отчет в REPORT_DIR
-Собственные логи пишутся в stdout, либо в файл, если определить имя файла:
-
-```
-logging.basicConfig(
-    filename='logfilename.log'
-)
-```
 
 При наличии конфиг-файла, запуск соответственно:
 
 ```console
-$ python3 log_analyzer.py --config cfg.ini
+$ python3 log_analyzer.py --config log_analyzer.cfg
 ```
 
 # Запуск тестов

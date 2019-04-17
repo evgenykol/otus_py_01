@@ -21,12 +21,6 @@ from datetime import datetime
 
 DEFAULT_CONFIG_PATH = './log_analyzer.cfg'
 
-logging.basicConfig(
-    format='[%(asctime)s] %(levelname).1s %(message)s',
-    level=logging.DEBUG,
-    datefmt='%Y.%m.%d %H:%M:%S'
-)
-
 LogInfo = namedtuple('LogInfo', ['date', 'path'])
 
 
@@ -52,6 +46,17 @@ def init_config():
         config.update(external_config)
 
     return config
+
+
+def init_logging(cfg):
+    loging_path = cfg.get('LOGGING_FILE')
+
+    logging.basicConfig(
+        format='[%(asctime)s] %(levelname).1s %(message)s',
+        level=logging.DEBUG,
+        datefmt='%Y.%m.%d %H:%M:%S',
+        filename=loging_path
+    )
 
 
 def find_last_log(log_dir):
@@ -190,13 +195,14 @@ def write_report(cfg, path, stat):
 def main():
     try:
         config = init_config()
+        init_logging(config)
         last_log = find_last_log(config.get('LOG_DIR'))
         report_path = make_report_path(config, last_log)
         reader = xreadlines(last_log.path, config.get('SUCSESSFUL_PERCENT'))
         urls = collect_url_data(reader)
         stat = calc_statistic(config, urls)
         write_report(config, report_path, stat)
-        logging.info('Log analyzing done!')
+        print('Log analyzing done!')
 
     except Exception:
         logging.exception('Exception')
