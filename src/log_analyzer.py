@@ -24,25 +24,28 @@ DEFAULT_CONFIG_PATH = './log_analyzer.cfg'
 LogInfo = namedtuple('LogInfo', ['date', 'path'])
 
 
+def get_ext_config_path():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', help='Config file path')
+    args = parser.parse_args()
+    return args.config
+
+
 def read_config(path):
     if not os.path.exists(path):
-        raise FileNotFoundError(
-            'Config file file not found at path: {0}'.format(path)
-        )
+        raise FileNotFoundError('Config file file not found at path: {0}'.format(path))
 
     with open(path) as cfg_file:
         return json.loads(cfg_file.read())
 
 
-def init_config():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', help='Config file path',
-                        default=DEFAULT_CONFIG_PATH
-                        )
-    args = parser.parse_args()
+def init_config(ext_path):
+    # default config is mandatory
     config = read_config(DEFAULT_CONFIG_PATH)
-    if args.config:
-        external_config = read_config(args.config)
+
+    # external config overrides default settings
+    if ext_path:
+        external_config = read_config(ext_path)
         config.update(external_config)
 
     return config
@@ -57,6 +60,17 @@ def init_logging(cfg):
         datefmt='%Y.%m.%d %H:%M:%S',
         filename=loging_path
     )
+
+
+def check_preconditions(cfg):
+    # check for report template exists
+    if not os.path.exists(cfg.get('REPORT_TEMPLATE')):
+        raise FileNotFoundError('Report template file not found at: {0}'.format(cfg.get('REPORT_TEMPLATE')))
+
+    # create report dir if doesn't exist
+    report_dir = cfg.get('REPORT_DIR')
+    if not os.path.exists(report_dir):
+        os.mkdir(report_dir)
 
 
 def find_last_log(log_dir):
@@ -89,26 +103,11 @@ def find_last_log(log_dir):
 
 
 def make_report_path(cfg, last_log):
-    # check for report.html exists
-    if not os.path.exists(cfg.get('REPORT_TEMPLATE')):
-        raise FileNotFoundError(
-            'Report template file not found at: {0}'.format(
-                cfg.get('REPORT_TEMPLATE'))
-        )
-
-    report_dir = cfg.get('REPORT_DIR')
-    if not os.path.exists(report_dir):
-        os.mkdir(report_dir)
-
-    report_path = os.path.join(report_dir,
+    report_path = os.path.join(cfg.get('REPORT_DIR'),
                                'report-{0}.html'.format(datetime.strftime(
                                    last_log.date, '%Y.%m.%d'))
                                )
-
-    if not os.path.isfile(report_path):
-        return report_path
-    else:
-        raise FileExistsError('Report at %s already exists' % report_path)
+    return report_path
 
 
 def process_line(line, line_number):
@@ -192,21 +191,26 @@ def write_report(cfg, path, stat):
     shutil.move(report_tmp_path, path)
 
 
-def main():
-    try:
-        config = init_config()
-        init_logging(config)
+def main(config):
+        check_preconditions(config)
         last_log = find_last_log(config.get('LOG_DIR'))
         report_path = make_report_path(config, last_log)
+        if os.path.isfile(report_path):
+            raise FileExistsError('Report at %s already exists' % report_path)
+
         reader = xreadlines(last_log.path, config.get('SUCSESSFUL_PERCENT'))
         urls = collect_url_data(reader)
         stat = calc_statistic(config, urls)
         write_report(config, report_path, stat)
         print('Log analyzing done!')
 
-    except Exception:
-        logging.exception('Exception')
-
 
 if __name__ == "__main__":
-    main()
+    try:
+        ext_cfg_path = get_ext_config_path()
+        config = init_config(ext_cfg_path)
+        init_logging(config)
+        main(config)
+
+    except Exception:
+        logging.exception('Exception')
